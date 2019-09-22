@@ -3,11 +3,10 @@
                            x_var, y_var, 
                            peak_threshold_ratio,
                            low_cutoff = 366,
-                           high_cutoff = 1,
-                           dc_threshold = 5 * high_cutoff,
-                           noise_threshold = 0.5,
+                           dc_threshold = low_cutoff - 5,
+                           noise_threshold = 0.05,
                            significance_threshold = 1,
-                           cycles = 30) {
+                           cycles = 3) {
 #
 # data is a data.frame or an object coercible to a data.frame
 # x_var is a character string naming a column in data that represents time
@@ -15,7 +14,11 @@
 #    
 # peak_threshold_ration is a numeric which determines which FFT peaks are kept
 # low_cutoff is the longest period for which we will keep a found peak
-# high_cutoff is the shortest period for which we will keep a found peak
+#    
+# dc_threshold can be used to remove more very low frequency values
+# to improve finding of legitimate peaks
+#
+# noise_threshold is used in the peak find section as a crude filter
 #    
 # significance_threshold is used in a simple linear model to drop
 # any parameters with p values less than significance threshold
@@ -56,27 +59,45 @@
 # this is used to reject the typically huge values at long periods (DC)
 #
     first_peak <- 1
-    noise_threshold <- 0.5
+    provisional_peak <- 0
     for (i in 2:(length(Mod(fft_raw) - 1))) {
       if (Mod(fft_raw)[i] > (1 + noise_threshold) * Mod(fft_raw)[i - 1]) {
         provisional_peak <- i
-        for (j in (provisional_peak + 1):(length(Mod(fft_raw) - 1)) {
-          if  (Mod(fft_raw)[j] > (1 + noise_threshold) * Mod(fft_raw)[j - 1]) {
+        for (j in (provisional_peak + 1):(length(Mod(fft_raw) - 1))) {
+          if  (Mod(fft_raw)[j] > (1 - noise_threshold) * Mod(fft_raw)[j - 1]) {
             provisional_peak <- j
           } else {
             first_peak <- provisional_peak
+            cat("exiting inner loop\n")
+            break()
           }
+        }
+        if (first_peak > 1) {
+          cat("exiting 2rd inner loop\n")
           break()
         }
+      }
+      if (first_peak > 1) {
+        cat("exiting outer loop\n")
+        break()
       }
     }
 #
 # the peak_threshold_ratio is just a cutoff to find peaks in the
 # power spectrum vs. frequency
 #
+# we look only at points from first_peak or the value determined
+# as an offset from low_cutoff using dc_threshold, i.e. if 
+# low_cutoff is 365 (longest period is 365 time steps) and 
+# dc_threshold is default, then dc_threshold = 365 - 5 = 360
+# and therefore the first data point we look at is 5 or first_peak,
+# whichever is greater, but we look back 3 steps from first_peak in the 
+# frequency spectrum to get the start of the peak
+#
+    labels_start <- max((low_cutoff - dc_threshold), (first_peak - 3))
     label_points <- 
-      which(Mod(fft_raw)[dc_threshold:length(fft_raw)] > 
-              peak_threshold_ratio * max(Mod(fft_raw)[dc_threshold:length(fft_raw)]))
+      which(Mod(fft_raw)[labels_start:length(fft_raw)] > 
+              peak_threshold_ratio * max(Mod(fft_raw)[labels_start:length(fft_raw)])) + labels_start
 #
 # there can be multiple samples in a peak, so we need to 
 # select just the actual peak point; the following logic
@@ -84,42 +105,42 @@
 # and choosing the one with the maximum power
 #
     final_label_points <- integer()
-    keep <- 1
-    for (index in 2:length(label_points)) {
-      if (abs(label_points[index] - label_points[index - 1]) < 2) {
-        if (Mod(fft_raw[label_points[index]]) >
-            Mod(fft_raw[label_points[keep]])) {
-          keep <- index
-        }
-        if (index == length(label_points)) {
-          final_label_points <- c(final_label_points, label_points[keep])
-        }
-      } else {
-        final_label_points <- c(final_label_points, label_points[keep])
-        keep <- index
-        if (index == length(label_points)) {
-          final_label_points <- c(final_label_points, label_points[keep])
+#
+# find start of first real peak
+#
+    first_label_start <- as.integer(NA)
+    for (possible_first_label_start in 1:(length(label_points) - 1)) {
+      if (Mod(fft_raw)[label_points[possible_first_label_start + 1]] > 
+          (1 + noise_threshold) * Mod(fft_raw)[label_points[possible_first_label_start]]) {
+        first_label_start <- possible_first_label_start
+        if (!(is.na(first_label_start))) {
+          break()
         }
       }
     }
-    if (length(final_label_points) == 0) {
-      final_label_points <- label_points[keep]
+    final_label_points <- label_points[first_label_start:length(label_points)]
+    keep_points <- integer()
+    for (index in 2:(length(final_label_points) - 1)) {
+      if (Mod(fft_raw)[index] > (1 + noise_threshold) * Mod(fft_raw)[index - 1] &
+          Mod(fft_raw)[index + 1] < (1 - noise_threshold) * Mod(fft_raw)[index]) {
+        keep_points <- c(keep_points, index)
+      }
+    }
+    if (length(keep_points) > 0) {
+      final_label_points <- final_label_points[which(final_label_points %in% keep_points)]
+    } else {
+      final_label_points <-
+        final_label_points[c(1, length(final_label_points))]
     }
 #
-# this function assumes we don't want the lowest frequency
+# if we didn't find anything, return NULL
 #
-    final_label_points <- 
-      final_label_points[!(final_label_points == 1)]
-    final_label_points <-
-      final_label_points[!(1/(freq[final_label_points]) > low_cutoff)]
-    final_label_points <-
-      final_label_points[!(1/(freq[final_label_points]) < high_cutoff)]
     if (length(final_label_points) == 0) {
       dft_results <- NULL
       return(dft_results)
     }
 #
-# we use all the frequencies above thethreshold
+# we use all the frequencies above the threshold
 # to fit the seasonal data to sine an cosine series
 #
     fit_frequencies <- freq[final_label_points]
@@ -145,7 +166,10 @@
     sdm_colnames <- c("time", sdm_colnames, "fft_data")
     colnames(seasonal_data_model) <- sdm_colnames
 #
-# fit over the requested cycles of the longest period
+# fit over the requested number cycles of the longest period
+# note that depending on the data and filtering settings
+# this parameter can have a significant impact when using 
+# the results over long numbers of time steps
 #
     fit_range <- cycles / min(fit_frequencies) / period
     prelim_model <- lm(fft_data ~ ., data = seasonal_data_model[1:fit_range, ])
@@ -168,20 +192,25 @@
 #
     label_frequencies <- freq[final_label_points]
     label_values <- as.character(ceiling(100 / label_frequencies) / 100)
-    plot(x = freq[dc_threshold:length(freq)], 
-         y = Mod(fft_raw[dc_threshold:length(freq)]), 
+    plot(x = freq[1:length(freq)], 
+         y = Mod(fft_raw[1:length(freq)]), 
          type = "l", 
          xaxt = "n",
          yaxt = "n",
-         xlab = "period (time steps)",
+         xlab = "period (time units)",
          ylab = "")
     title(ylab = "relative power in frequency", mgp = c(2, 1, 0))
     par(mgp = c(3, 1, 0))
     text(x = freq[final_label_points], 
          y = Mod(fft_raw[final_label_points]), 
-         label_values, pos = 4)
-    abline(v = 1 / low_cutoff, col = "red")
-    abline(v = 1 / high_cutoff, col = "red")
+         label_values, 
+         pos = 4)
+    abline(v = freq[low_cutoff - dc_threshold], col = "red")
+    text(x = freq[low_cutoff - dc_threshold],
+         y = 0.95 * max(Mod(fft_raw[1:length(freq)])),
+         "low cutoff",
+         pos = 4, 
+         col = "red")
 #
 # create the x-axis in period vs. frequency
 #
