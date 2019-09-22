@@ -19,19 +19,22 @@
 #
   library(dplyr)
 #
-  time_steps <- 730
+  time_units <- 730
   period_1 <- 3.5
   period_2 <- 13
 #
-  time <- seq(1:time_steps)
+# here we generate 10 points per time unit granularity
+#
+  granularity <- 10
+  time <- seq(1, time_units, 1 / granularity)
 #
 # sinusoid with period "period_1" units
 #
-  X1 <- sin(2 * pi * seq(1:time_steps) / period_1)
+  X1 <- sin(2 * pi * time / period_1)
 #
 # sinusoid with period "period_2" units
 #
-  X2 <- sin(2 * pi * seq(1:time_steps) / period_2)
+  X2 <- sin(2 * pi * time / period_2)
 #
 # linear growth with time (to demonstrate DFT still works with trend)
 #  
@@ -56,37 +59,65 @@
 #
 # run the DFT analysis
 #
+# define some common parameters for reuse
+#
+  x_var <- "time"
+  y_var <- "Y"
+  low_cutoff <- 3000
+  dc_threshold <- low_cutoff - 50
+  peak_threshold_ratio <- 0.01
+  cycles <- 10
+#
   dft_results <-
-    dft_analysis(my_data, 
-                 "time",
-                 "Y",
-                 low_cutoff = 100,
-                 peak_threshold_ratio = 0.01,
-                 cycles = 10)
+    dft_analysis(data = my_data, 
+                 x_var = x_var,
+                 y_var = y_var,
+                 low_cutoff = low_cutoff,
+                 dc_threshold = dc_threshold,
+                 peak_threshold_ratio = peak_threshold_ratio,
+                 cycles = cycles)
 #
 # dft_results has the periods and the model variable names
 #
   print(dft_results)
 #
+# to demonstrate what happens if we too aggressively cut
+# out low frequencies we increase the impact of dc_threshold
+#
+  dc_threshold <- low_cutoff - 100
+  dft_results <-
+    dft_analysis(data = my_data, 
+                 x_var = x_var,
+                 y_var = y_var,
+                 low_cutoff = low_cutoff,
+                 dc_threshold = dc_threshold,
+                 peak_threshold_ratio = peak_threshold_ratio,
+                 cycles = cycles)
+#
 # repeat with periods of even days
 #
-  time_steps <- 730
-  period_1 <- 7
-  period_2 <- 31
+  time_units <- 730
 #
-  time <- seq(1:time_steps)
+# this makes one periodic component essentially DC
+#
+  period_1 <- 10000
+#  
+  period_2 <- 30
+#
+  granularity <- 1
+  time <- seq(1, time_units, 1 / granularity)
 #
 # sinusoid with period "period_1" units
 #
-  X1 <- sin(2 * pi * seq(1:time_steps) / period_1)
+  X1 <- sin(2 * pi * time / period_1)
 #
 # sinusoid with period "period_2" units
 #
-  X2 <- sin(2 * pi * seq(1:time_steps) / period_2)
+  X2 <- sin(2 * pi * time / period_2)
 #
 # linear growth with time (to demonstrate DFT still works with trend)
 #  
-  X4 <- 0.05 * time
+  X4 <- 0.0 * time
 #
 # Y is a linear function of the two sinusoids plus the growth term
 #
@@ -107,15 +138,17 @@
 #
 # run the DFT analysis
 #
+  low_cutoff <- 365
+  dc_threshold <- low_cutoff - 5
+#
   dft_results <-
-    dft_analysis(my_data, 
-                 "time",
-                 "Y",
-                 low_cutoff = 100,
-                 high_cutoff = 2,
-                 hf_threshold = 2,
-                 peak_threshold_ratio = 0,
-                 cycles = 10)
+    dft_analysis(data = my_data, 
+                 x_var = x_var,
+                 y_var = y_var,
+                 low_cutoff = low_cutoff,
+                 dc_threshold = dc_threshold,
+                 peak_threshold_ratio = peak_threshold_ratio,
+                 cycles = cycles)
 #
 # dft_results has the periods and the model variable names
 #
