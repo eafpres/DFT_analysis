@@ -91,13 +91,18 @@
 # low_cutoff is 365 (longest period is 365 time steps) and 
 # dc_threshold is default, then dc_threshold = 365 - 5 = 360
 # and therefore the first data point we look at is 5 or first_peak,
-# whichever is greater, but we look back 3 steps from first_peak in the 
+# whichever is greater, but we look back 1 step from first_peak in the 
 # frequency spectrum to get the start of the peak
 #
-    labels_start <- max((low_cutoff - dc_threshold), (first_peak - 3))
+    labels_start <- max((low_cutoff - dc_threshold), (first_peak - 1))
     label_points <- 
-      which(Mod(fft_raw)[labels_start:length(fft_raw)] > 
-              peak_threshold_ratio * max(Mod(fft_raw)[labels_start:length(fft_raw)])) + labels_start
+      which(Mod(fft_raw)[labels_start:length(fft_raw)] -
+              min(Mod(fft_raw)[labels_start:length(fft_raw)]) > 
+              peak_threshold_ratio * 
+              max(Mod(fft_raw)[labels_start:length(fft_raw)]) -
+              min(Mod(fft_raw)[labels_start:length(fft_raw)]))
+    label_points <-
+      label_points + labels_start - 1
 #
 # there can be multiple samples in a peak, so we need to 
 # select just the actual peak point; the following logic
@@ -110,8 +115,9 @@
 #
     first_label_start <- as.integer(NA)
     for (possible_first_label_start in 1:(length(label_points) - 1)) {
-      if (Mod(fft_raw)[label_points[possible_first_label_start + 1]] > 
-          (1 + noise_threshold) * Mod(fft_raw)[label_points[possible_first_label_start]]) {
+      if (Mod(fft_raw)[labels_start:length(fft_raw)][label_points[possible_first_label_start + 1]] > 
+          (1 + noise_threshold) * 
+          Mod(fft_raw)[labels_start:length(fft_raw)][label_points[possible_first_label_start]]) {
         first_label_start <- possible_first_label_start
         if (!(is.na(first_label_start))) {
           break()
@@ -121,8 +127,10 @@
     final_label_points <- label_points[first_label_start:length(label_points)]
     keep_points <- integer()
     for (index in 2:(length(final_label_points) - 1)) {
-      if (Mod(fft_raw)[index] > (1 + noise_threshold) * Mod(fft_raw)[index - 1] &
-          Mod(fft_raw)[index + 1] < (1 - noise_threshold) * Mod(fft_raw)[index]) {
+      if (Mod(fft_raw)[final_label_points[index]] > 
+          (1 + noise_threshold) * Mod(fft_raw)[final_label_points[index - 1]] &
+          Mod(fft_raw)[final_label_points[index + 1]] < 
+                       (1 - noise_threshold) * Mod(fft_raw)[final_label_points[index]]) {
         keep_points <- c(keep_points, index)
       }
     }
@@ -192,8 +200,8 @@
 #
     label_frequencies <- freq[final_label_points]
     label_values <- as.character(ceiling(100 / label_frequencies) / 100)
-    plot(x = freq[1:length(freq)], 
-         y = Mod(fft_raw[1:length(freq)]), 
+    plot(x = freq[1:min(length(freq), 2 * max(final_label_points))], 
+         y = Mod(fft_raw[1:min(length(freq), 2 * max(final_label_points))]), 
          type = "l", 
          xaxt = "n",
          yaxt = "n",
@@ -205,8 +213,8 @@
          y = Mod(fft_raw[final_label_points]), 
          label_values, 
          pos = 4)
-    abline(v = freq[low_cutoff - dc_threshold], col = "red")
-    text(x = freq[low_cutoff - dc_threshold],
+    abline(v = freq[min(1, low_cutoff - dc_threshold)], col = "red")
+    text(x = freq[min(1, low_cutoff - dc_threshold)],
          y = 0.95 * max(Mod(fft_raw[1:length(freq)])),
          "low cutoff",
          pos = 4, 
@@ -214,13 +222,16 @@
 #
 # create the x-axis in period vs. frequency
 #
-    axis_points <- seq(0, ceiling(max(freq)), length = 10)
+    axis_points <- 
+      seq(0, max(freq[1:min(length(freq), 2 * max(final_label_points))]), 
+          length = 10)
     axis(1, at = axis_points,
          label = c("", 
                    ceiling(10 / axis_points[2:length(axis_points)]) / 10))
     axis(2, at = 
-           seq(min(Mod(fft_raw)), 
-               max(Mod(fft_raw)), length = 10),
+           seq(min(Mod(fft_raw[1:min(length(freq), 2 * max(final_label_points))])), 
+               max(Mod(fft_raw[1:min(length(freq), 2 * max(final_label_points))])), 
+               length = 10),
          label = rep("", 10))
 #
 # plot the prediction
