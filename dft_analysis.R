@@ -1,18 +1,24 @@
 #
   dft_analysis <- function(data, 
                            x_var, y_var, 
-                           peak_threshold_ratio,
                            low_cutoff = 366,
-                           dc_threshold = low_cutoff - 5,
+                           dc_threshold = low_cutoff,
+                           peak_threshold_ratio = 0.01,
                            noise_threshold = 0.05,
                            significance_threshold = 1,
-                           cycles = 3) {
+                           cycles = 3,
+                           smooth_n = 1) {
+#
+# some needed libraries if not loaded in the calling code
+#
+    require(dplyr)
+    require(zoo)
 #
 # data is a data.frame or an object coercible to a data.frame
 # x_var is a character string naming a column in data that represents time
 # y_var is a character string naming a column in data for analysis
 #    
-# peak_threshold_ration is a numeric which determines which FFT peaks are kept
+# peak_threshold_ratio is a numeric which determines which FFT peaks are kept
 # low_cutoff is the longest period for which we will keep a found peak
 #    
 # dc_threshold can be used to remove more very low frequency values
@@ -25,6 +31,10 @@
 #
 # cycles is the number of cycles of the longest period found
 # to be used in the model fit visualization
+#
+# smooth_n is the number of points over which to perform optional
+# moving average smoothing; this can 'sometimes' help with noisy
+# data but in general will negatively impact the resulting fit
 #    
 # NOTE that significance_threshold only affects the model 
 # which is a side effect and NOT returned by the function
@@ -45,8 +55,9 @@
 #
     f.Nyquist <- 0.5 * (1 / period)
     freq <- 
-      f.Nyquist * c(seq(length(fft_data) / 2), 
-                    -rev(seq(length(fft_data) / 2)))/(length(fft_data) / 2)
+      c(0,
+        f.Nyquist * c(seq(length(fft_data) / 2), 
+                    -rev(seq(length(fft_data) / 2)))/(length(fft_data) / 2))
 #
 # a property of the discrete FFT is that it reflects
 # the data to negative frequencies, so we strip those off
@@ -55,33 +66,88 @@
     freq <- freq[real_points]
     fft_raw <- fft_raw[real_points]
 #
-# find the first point where the value increases
-# this is used to reject the typically huge values at long periods (DC)
+# now we do smoothing over smooth_n periods, centered, to eliminate
+# noise to avoid duplicating peaks in adjacent samples
 #
-    first_peak <- 1
-    provisional_peak <- 0
-    for (i in 2:(length(Mod(fft_raw) - 1))) {
-      if (Mod(fft_raw)[i] > (1 + noise_threshold) * Mod(fft_raw)[i - 1]) {
-        provisional_peak <- i
-        for (j in (provisional_peak + 1):(length(Mod(fft_raw) - 1))) {
-          if  (Mod(fft_raw)[j] > (1 - noise_threshold) * Mod(fft_raw)[j - 1]) {
-            provisional_peak <- j
-          } else {
-            first_peak <- provisional_peak
-            cat("exiting inner loop\n")
-            break()
-          }
-        }
-        if (first_peak > 1) {
-          cat("exiting 2rd inner loop\n")
-          break()
-        }
-      }
-      if (first_peak > 1) {
-        cat("exiting outer loop\n")
-        break()
+    FFT_processed <- 
+      fft_raw %>%
+      as.data.frame() %>%
+      rename(fft_raw = names(.)[1]) %>%
+      mutate(smooth_fft = rollmean(Mod(fft_raw), k = smooth_n, fill = "extend", align = "center"))
+#
+# find the first peak then get some properties
+# of all the remaining data
+#
+    found_start_first_peak <- FALSE
+    index <- 1
+    while (!found_start_first_peak & index < length(fft_raw)) {
+      index <- index + 1 
+      if (FFT_processed$smooth_fft[index] > (1 + noise_threshold) * FFT_processed$smooth_fft[index - 1]) {
+        found_start_first_peak <- TRUE
+        start_first_peak <- index - 1
       }
     }
+    found_end_last_peak <- FALSE
+    index <- nrow(FFT_processed)
+    while (!found_end_last_peak & index > 1) {
+      index <- index - 1
+      if (FFT_processed$smooth_fft[index] > (1 + noise_threshold) * FFT_processed$smooth_fft[index + 1]) {
+        found_end_last_peak <- TRUE
+        end_last_peak <- index + 1
+      }
+    }
+    max_retained_fft <-
+      max(FFT_processed$smooth_fft[start_first_peak:nrow(FFT_processed)])
+    last_retained_fft_index <-
+      min(nrow(FFT_processed), end_last_peak + 3)
+    min_retained_fft <-
+      min(FFT_processed$smooth_fft[start_first_peak:nrow(FFT_processed)])
+    first_retained_fft_index <-
+      max(1, start_first_peak - 3)
+#    
+# visualize the range selected with peaks
+#
+    FFT_processed %>%
+      mutate(X = row_number()) %>%
+      filter(X >= first_retained_fft_index) %>%
+      filter(X <= last_retained_fft_index) %>%
+      ggplot(aes(x = X, y = smooth_fft)) +
+      geom_point(color = "red", size = 2) +
+      ylim(c(0.99 * min_retained_fft, 1.01 * max_retained_fft)) +
+      geom_smooth(color = "black", size = 0.25, linetype = 2, se = FALSE, span = 0.2)
+#
+# calculate the first derivative on the left and right of each point excluding the ends
+#
+    derivatives <- 
+      data.frame(left_derivative = numeric(length = nrow(FFT_processed)),
+                 right_derivative = numeric(length = nrow(FFT_processed)))
+    for (index in 1:nrow(FFT_processed)) {
+      if (index == 1) {
+        derivatives$left_derivative[index] <- NA
+        derivatives$right_derivative[index] <-
+          (FFT_processed$smooth_fft[index + 1] - FFT_processed$smooth_fft[index]) / period
+      } else if (index == length(fft_raw)) {
+        derivatives$left_derivative[index] <-
+          (FFT_processed$smooth_fft[index] - FFT_processed$smooth_fft[index - 1]) / period
+        derivatives$right_derivative[index] <- NA
+      } else {
+        derivatives$left_derivative[index] <-
+          (FFT_processed$smooth_fft[index] - FFT_processed$smooth_fft[index - 1]) / period
+        derivatives$right_derivative[index] <-
+          (FFT_processed$smooth_fft[index + 1] - FFT_processed$smooth_fft[index]) / period
+      }
+    }
+    FFT_processed <-
+      FFT_processed %>%
+      mutate(fft = Mod(fft_raw)) %>%
+      mutate(left_derivative = derivatives$left_derivative) %>%
+      mutate(right_derivative = derivatives$right_derivative) %>%
+      mutate(PEAK = case_when(
+        left_derivative > 0 & right_derivative <= 0 ~ TRUE,
+        left_derivative >= 0 & right_derivative < 0 ~ TRUE,
+        TRUE ~ FALSE
+      )) %>%
+      mutate(frequency = freq)
 #
 # the peak_threshold_ratio is just a cutoff to find peaks in the
 # power spectrum vs. frequency
@@ -89,20 +155,18 @@
 # we look only at points from first_peak or the value determined
 # as an offset from low_cutoff using dc_threshold, i.e. if 
 # low_cutoff is 365 (longest period is 365 time steps) and 
-# dc_threshold is default, then dc_threshold = 365 - 5 = 360
-# and therefore the first data point we look at is 5 or first_peak,
+# dc_threshold is default, then dc_threshold = low_cutoff
+# and therefore the first data point we look at is at f > 1 / 365 or first_peak,
 # whichever is greater, but we look back 1 step from first_peak in the 
 # frequency spectrum to get the start of the peak
 #
-    labels_start <- max((low_cutoff - dc_threshold), (first_peak - 1))
     label_points <- 
-      which(Mod(fft_raw)[labels_start:length(fft_raw)] -
-              min(Mod(fft_raw)[labels_start:length(fft_raw)]) > 
-              peak_threshold_ratio * 
-              max(Mod(fft_raw)[labels_start:length(fft_raw)]) -
-              min(Mod(fft_raw)[labels_start:length(fft_raw)]))
-    label_points <-
-      label_points + labels_start - 1
+      which(FFT_processed$PEAK)
+    if (min(low_cutoff, dc_threshold) > 0) {
+      label_points <- 
+        label_points[which(FFT_processed$frequency[label_points] > 
+                             (1 / min(low_cutoff * period, dc_threshold * period)))]
+    }
 #
 # there can be multiple samples in a peak, so we need to 
 # select just the actual peak point; the following logic
@@ -110,35 +174,22 @@
 # and choosing the one with the maximum power
 #
     final_label_points <- integer()
-#
-# find start of first real peak
-#
-    first_label_start <- as.integer(NA)
-    for (possible_first_label_start in 1:(length(label_points) - 1)) {
-      if (Mod(fft_raw)[labels_start:length(fft_raw)][label_points[possible_first_label_start + 1]] > 
-          (1 + noise_threshold) * 
-          Mod(fft_raw)[labels_start:length(fft_raw)][label_points[possible_first_label_start]]) {
-        first_label_start <- possible_first_label_start
-        if (!(is.na(first_label_start))) {
-          break()
+    keep_points <- integer()
+    if (length(label_points) > 1) {
+      for (index in 1:(length(label_points))) {
+        if (FFT_processed$smooth_fft[label_points[index]] > 
+            (1 + noise_threshold) * FFT_processed$smooth_fft[label_points[index] - 1] &
+            FFT_processed$smooth_fft[label_points[index] + 1] < 
+            (1 - noise_threshold) * FFT_processed$smooth_fft[label_points[index]]) {
+          keep_points <- c(keep_points, index)
         }
       }
-    }
-    final_label_points <- label_points[first_label_start:length(label_points)]
-    keep_points <- integer()
-    for (index in 2:(length(final_label_points) - 1)) {
-      if (Mod(fft_raw)[final_label_points[index]] > 
-          (1 + noise_threshold) * Mod(fft_raw)[final_label_points[index - 1]] &
-          Mod(fft_raw)[final_label_points[index + 1]] < 
-                       (1 - noise_threshold) * Mod(fft_raw)[final_label_points[index]]) {
-        keep_points <- c(keep_points, index)
-      }
+      keep_points <- label_points[keep_points]
+    } else {
+      keep_points <- label_points
     }
     if (length(keep_points) > 0) {
-      final_label_points <- final_label_points[which(final_label_points %in% keep_points)]
-    } else {
-      final_label_points <-
-        final_label_points[c(1, length(final_label_points))]
+      final_label_points <- keep_points
     }
 #
 # if we didn't find anything, return NULL
@@ -200,8 +251,10 @@
 #
     label_frequencies <- freq[final_label_points]
     label_values <- as.character(ceiling(100 / label_frequencies) / 100)
-    plot(x = freq[1:min(length(freq), 2 * max(final_label_points))], 
-         y = Mod(fft_raw[1:min(length(freq), 2 * max(final_label_points))]), 
+    plot(x = freq[max(1, min(final_label_points) - 3):
+                    min(length(freq), 2 * max(final_label_points))], 
+         y = FFT_processed$smooth_fft[max(1, min(final_label_points) - 3):
+                                 min(length(freq), min(length(freq), 2 * max(final_label_points)))], 
          type = "l", 
          xaxt = "n",
          yaxt = "n",
@@ -210,12 +263,13 @@
     title(ylab = "relative power in frequency", mgp = c(2, 1, 0))
     par(mgp = c(3, 1, 0))
     text(x = freq[final_label_points], 
-         y = Mod(fft_raw[final_label_points]), 
+         y = FFT_processed$smooth_fft[final_label_points], 
          label_values, 
          pos = 4)
-    abline(v = freq[min(1, low_cutoff - dc_threshold)], col = "red")
-    text(x = freq[min(1, low_cutoff - dc_threshold)],
-         y = 0.95 * max(Mod(fft_raw[1:length(freq)])),
+    low_cutoff_x <-  min(min(freq), min(1 / (low_cutoff * period), 1 / (dc_threshold * period)))
+    abline(v = low_cutoff_x, col = "red")
+    text(x = low_cutoff_x,
+         y = 0.95 * max(FFT_processed$fft),
          "low cutoff",
          pos = 4, 
          col = "red")
@@ -229,8 +283,10 @@
          label = c("", 
                    ceiling(10 / axis_points[2:length(axis_points)]) / 10))
     axis(2, at = 
-           seq(min(Mod(fft_raw[1:min(length(freq), 2 * max(final_label_points))])), 
-               max(Mod(fft_raw[1:min(length(freq), 2 * max(final_label_points))])), 
+           seq(min(FFT_processed$smooth_fft[max(1, min(final_label_points) - 3):
+                     min(length(freq), min(length(freq), 2 * max(final_label_points)))]),
+               max(FFT_processed$smooth_fft[max(1, min(final_label_points) - 3):
+                     min(length(freq), min(length(freq), 2 * max(final_label_points)))]), 
                length = 10),
          label = rep("", 10))
 #
